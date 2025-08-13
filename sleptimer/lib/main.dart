@@ -11,9 +11,10 @@ void main() async {
   await windowManager.ensureInitialized();
   
   // Configure window settings
-  await windowManager.setMinimumSize(const Size(400, 600));
-  await windowManager.setSize(const Size(400, 600));
+  await windowManager.setMinimumSize(const Size(550, 450));
+  await windowManager.setSize(const Size(550, 450));
   await windowManager.setTitle('Sleep Timer');
+  await windowManager.setResizable(true);
   
   // Initialize tray manager
   try {
@@ -129,7 +130,7 @@ class _SleepTimerHomeState extends State<SleepTimerHome>
           MenuItem.separator(),
           MenuItem(
             key: 'quit',
-            label: 'Quit',
+            label: 'Quit App',
           ),
         ],
       ));
@@ -152,8 +153,8 @@ class _SleepTimerHomeState extends State<SleepTimerHome>
   // Setup window event listeners
   void _setupWindowListeners() async {
     try {
-      // Configure window to hide instead of close
-      await windowManager.setPreventClose(true);
+      // Allow window to close normally
+      await windowManager.setPreventClose(false);
     } catch (e) {
       print('Error setting up window listeners: $e');
     }
@@ -270,20 +271,6 @@ class _SleepTimerHomeState extends State<SleepTimerHome>
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(
-        backgroundColor: Colors.transparent,
-        elevation: 0,
-        automaticallyImplyLeading: false, // Hide default back button
-        title: const Text(
-          'Sleep Timer',
-          style: TextStyle(
-            color: Colors.white,
-            fontSize: 16,
-            fontWeight: FontWeight.w500,
-          ),
-        ),
-        centerTitle: true,
-      ),
       body: Container(
         decoration: const BoxDecoration(
           color: Color(0xFF1a1a1a), // Solid Light Black background
@@ -300,7 +287,7 @@ class _SleepTimerHomeState extends State<SleepTimerHome>
                   const Text(
                     'Sleep Timer',
                     style: TextStyle(
-                      fontSize: 28,
+                      fontSize: 32,
                       fontWeight: FontWeight.bold,
                       color: Colors.white,
                       letterSpacing: 1,
