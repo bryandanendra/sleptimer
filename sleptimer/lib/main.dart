@@ -13,7 +13,7 @@ void main() async {
   // Configure window settings
   await windowManager.setMinimumSize(const Size(550, 450));
   await windowManager.setSize(const Size(550, 450));
-  await windowManager.setTitle('Sleep Timer');
+  await windowManager.setTitle('RestClock');
   await windowManager.setResizable(true);
   
   // Initialize tray manager
@@ -108,7 +108,7 @@ class _SleepTimerHomeState extends State<SleepTimerHome>
         // Don't set icon, let it use default
       }
       
-      await trayManager.setToolTip('Sleep Timer');
+      await trayManager.setToolTip('RestClock');
       await trayManager.setContextMenu(Menu(
         items: [
           MenuItem(
@@ -354,27 +354,36 @@ class _SleepTimerHomeState extends State<SleepTimerHome>
                         ),
                       ),
                       // Toggle button di pojok kanan
-                      GestureDetector(
-                        onTap: _toggleTimeMode,
+                      MouseRegion(
+                        cursor: _isRunning ? SystemMouseCursors.basic : SystemMouseCursors.click,
+                        child: GestureDetector(
+                          onTap: _isRunning ? null : _toggleTimeMode,
                         child: Container(
                           padding: const EdgeInsets.all(12),
                           decoration: BoxDecoration(
-                            color: _isTimeMode 
-                              ? const Color(0xFF1e3a8a).withOpacity(0.8)
-                              : const Color(0xFF2d2d2d).withOpacity(0.6),
+                            color: _isRunning 
+                              ? const Color(0xFF2d2d2d).withOpacity(0.3)
+                              : (_isTimeMode 
+                                ? const Color(0xFF1e3a8a).withOpacity(0.8)
+                                : const Color(0xFF2d2d2d).withOpacity(0.6)),
                             borderRadius: BorderRadius.circular(20),
                             border: Border.all(
-                              color: _isTimeMode 
-                                ? const Color(0xFF1e3a8a)
-                                : Colors.white.withOpacity(0.1),
+                              color: _isRunning
+                                ? Colors.white.withOpacity(0.1)
+                                : (_isTimeMode 
+                                  ? const Color(0xFF1e3a8a)
+                                  : Colors.white.withOpacity(0.1)),
                               width: 2,
                             ),
                           ),
                           child: Icon(
                             _isTimeMode ? Icons.access_time : Icons.timer,
-                            color: _isTimeMode ? Colors.white : Colors.white70,
+                            color: _isRunning 
+                              ? Colors.white.withOpacity(0.3)
+                              : (_isTimeMode ? Colors.white : Colors.white70),
                             size: 24,
                           ),
+                        ),
                         ),
                       ),
                     ],
