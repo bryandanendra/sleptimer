@@ -60,6 +60,7 @@ class _SleepTimerHomeState extends State<SleepTimerHome>
   int _totalSeconds = 0;
   bool _isRunning = false;
   bool _isSleepMode = true;
+  bool _isTimeMode = false; // Mode waktu jam
   Timer? _timer;
   late AnimationController _animationController;
   late Animation<double> _fadeAnimation;
@@ -161,7 +162,23 @@ class _SleepTimerHomeState extends State<SleepTimerHome>
   }
 
   void _calculateTotalSeconds() {
-    _totalSeconds = _hours * 3600 + _minutes * 60 + _seconds;
+    if (_isTimeMode) {
+      // Hitung waktu target untuk sleep/shutdown
+      final now = DateTime.now();
+      final targetTime = DateTime(now.year, now.month, now.day, _hours, _minutes, _seconds);
+      
+      // Jika waktu target sudah lewat hari ini, set untuk besok
+      if (targetTime.isBefore(now)) {
+        final tomorrow = now.add(const Duration(days: 1));
+        final targetTomorrow = DateTime(tomorrow.year, tomorrow.month, tomorrow.day, _hours, _minutes, _seconds);
+        _totalSeconds = targetTomorrow.difference(now).inSeconds;
+      } else {
+        _totalSeconds = targetTime.difference(now).inSeconds;
+      }
+    } else {
+      // Mode timer biasa
+      _totalSeconds = _hours * 3600 + _minutes * 60 + _seconds;
+    }
   }
 
   void _startTimer() {
@@ -200,6 +217,25 @@ class _SleepTimerHomeState extends State<SleepTimerHome>
     });
   }
 
+  void _toggleTimeMode() {
+    setState(() {
+      _isTimeMode = !_isTimeMode;
+      if (_isTimeMode) {
+        // Set waktu saat ini saat beralih ke mode waktu
+        final now = DateTime.now();
+        _hours = now.hour;
+        _minutes = now.minute;
+        _seconds = 0;
+      } else {
+        // Reset ke timer default saat beralih ke mode timer
+        _hours = 0;
+        _minutes = 25;
+        _seconds = 0;
+      }
+      _calculateTotalSeconds();
+    });
+  }
+
   void _updateTimeDisplay() {
     _hours = _totalSeconds ~/ 3600;
     _minutes = (_totalSeconds % 3600) ~/ 60;
@@ -226,7 +262,26 @@ class _SleepTimerHomeState extends State<SleepTimerHome>
   }
 
   String _formatTime(int hours, int minutes, int seconds) {
-    return '${hours.toString().padLeft(2, '0')}:${minutes.toString().padLeft(2, '0')}:${seconds.toString().padLeft(2, '0')}';
+    if (_isTimeMode) {
+      // Format waktu untuk mode jam
+      return '${hours.toString().padLeft(2, '0')}:${minutes.toString().padLeft(2, '0')}:${seconds.toString().padLeft(2, '0')}';
+    } else {
+      // Format timer biasa
+      return '${hours.toString().padLeft(2, '0')}:${minutes.toString().padLeft(2, '0')}:${seconds.toString().padLeft(2, '0')}';
+    }
+  }
+
+  String _getTargetTimeString() {
+    final now = DateTime.now();
+    final targetTime = DateTime(now.year, now.month, now.day, _hours, _minutes, _seconds);
+    
+    if (targetTime.isBefore(now)) {
+      final tomorrow = now.add(const Duration(days: 1));
+      final targetTomorrow = DateTime(tomorrow.year, tomorrow.month, tomorrow.day, _hours, _minutes, _seconds);
+      return '${targetTomorrow.hour.toString().padLeft(2, '0')}:${targetTomorrow.minute.toString().padLeft(2, '0')} (Tomorrow)';
+    } else {
+      return '${targetTime.hour.toString().padLeft(2, '0')}:${targetTime.minute.toString().padLeft(2, '0')} (Today)';
+    }
   }
 
   // Tray listener methods
@@ -277,23 +332,54 @@ class _SleepTimerHomeState extends State<SleepTimerHome>
         ),
                   child: SafeArea(
             child: Padding(
-              padding: const EdgeInsets.all(20.0),
+              padding: const EdgeInsets.fromLTRB(20.0, 10.0, 20.0, 20.0),
             child: FadeTransition(
               opacity: _fadeAnimation,
         child: Column(
-                mainAxisAlignment: MainAxisAlignment.center,
+                mainAxisAlignment: MainAxisAlignment.start,
                 children: [
-                  // Title
-                  const Text(
-                    'Sleep Timer',
-                    style: TextStyle(
-                      fontSize: 32,
-                      fontWeight: FontWeight.bold,
-                      color: Colors.white,
-                      letterSpacing: 1,
-                    ),
+                  // Header dengan title dan toggle button
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                    children: [
+                      const Expanded(
+                        child: Text(
+                          'RestClock',
+                          style: TextStyle(
+                            fontSize: 32,
+                            fontWeight: FontWeight.bold,
+                            color: Colors.white,
+                            letterSpacing: 1,
+                          ),
+                        ),
+                      ),
+                      // Toggle button di pojok kanan
+                      GestureDetector(
+                        onTap: _toggleTimeMode,
+                        child: Container(
+                          padding: const EdgeInsets.all(12),
+                          decoration: BoxDecoration(
+                            color: _isTimeMode 
+                              ? const Color(0xFF1e3a8a).withOpacity(0.8)
+                              : const Color(0xFF2d2d2d).withOpacity(0.6),
+                            borderRadius: BorderRadius.circular(20),
+                            border: Border.all(
+                              color: _isTimeMode 
+                                ? const Color(0xFF1e3a8a)
+                                : Colors.white.withOpacity(0.1),
+                              width: 2,
+                            ),
+                          ),
+                          child: Icon(
+                            _isTimeMode ? Icons.access_time : Icons.timer,
+                            color: _isTimeMode ? Colors.white : Colors.white70,
+                            size: 24,
+                          ),
+                        ),
+                      ),
+                    ],
                   ),
-                  const SizedBox(height: 16),
+                  const SizedBox(height: 12),
 
                   // Timer Display dengan input manual
                   GestureDetector(
@@ -308,18 +394,33 @@ class _SleepTimerHomeState extends State<SleepTimerHome>
                           width: 1,
                         ),
                       ),
-                      child: Text(
-                        _formatTime(_hours, _minutes, _seconds),
-                        style: const TextStyle(
-                          fontSize: 48,
-                          fontWeight: FontWeight.w300,
-                          color: Colors.white,
-                          fontFamily: 'monospace',
-                        ),
+                      child: Column(
+                        children: [
+                          Text(
+                            _formatTime(_hours, _minutes, _seconds),
+                            style: const TextStyle(
+                              fontSize: 48,
+                              fontWeight: FontWeight.w300,
+                              color: Colors.white,
+                              fontFamily: 'monospace',
+                            ),
+                          ),
+                          if (_isTimeMode && _isRunning) ...[
+                            const SizedBox(height: 8),
+                            Text(
+                              'Target: ${_getTargetTimeString()}',
+                              style: const TextStyle(
+                                fontSize: 14,
+                                color: Colors.white70,
+                                fontFamily: 'monospace',
+                              ),
+                            ),
+                          ],
+                        ],
                       ),
                     ),
                   ),
-                  const SizedBox(height: 16),
+                  const SizedBox(height: 12),
 
                   // Time Controls
                   Row(
@@ -345,7 +446,7 @@ class _SleepTimerHomeState extends State<SleepTimerHome>
                       }, 0, 59),
                     ],
                   ),
-                  const SizedBox(height: 16),
+                  const SizedBox(height: 12),
 
                   // All Buttons in One Row
                   Row(
@@ -495,7 +596,7 @@ class _SleepTimerHomeState extends State<SleepTimerHome>
         child: Icon(
           icon,
           color: isSelected ? const Color(0xFF1e3a8a) : Colors.white70,
-          size: 24,
+          size: 26,
         ),
       ),
     );
@@ -517,7 +618,7 @@ class _SleepTimerHomeState extends State<SleepTimerHome>
         child: Icon(
           icon,
           color: color,
-          size: 28,
+          size: 26,
         ),
       ),
     );
