@@ -1,8 +1,11 @@
 import 'package:flutter/material.dart';
 import 'dart:async';
 import 'dart:io';
+import 'dart:ui';
 import 'package:window_manager/window_manager.dart';
 import 'package:tray_manager/tray_manager.dart';
+import 'package:shared_preferences/shared_preferences.dart';
+import 'package:intl/intl.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -64,6 +67,9 @@ class _SleepTimerHomeState extends State<SleepTimerHome>
   Timer? _timer;
   late AnimationController _animationController;
   late Animation<double> _fadeAnimation;
+  
+  // Mac system log history
+  List<Map<String, String>> _historyEvents = [];
 
   @override
   void initState() {
@@ -87,6 +93,9 @@ class _SleepTimerHomeState extends State<SleepTimerHome>
     
     // Listen for window events
     _setupWindowListeners();
+    
+    // Load Mac system logs (last 3 activities)
+    _loadMacSystemLogs();
   }
 
   @override
@@ -284,6 +293,119 @@ class _SleepTimerHomeState extends State<SleepTimerHome>
     }
   }
 
+  // Read Mac system logs for last 3 activities
+  Future<void> _loadMacSystemLogs() async {
+    try {
+      // Run pmset -g log to get sleep/wake history
+      final result = await Process.run('pmset', ['-g', 'log']);
+      
+      if (result.exitCode == 0) {
+        final output = result.stdout.toString();
+        final events = _parseSleepWakeEvents(output);
+        
+        if (mounted && events.isNotEmpty) {
+          setState(() {
+            // Store events for scrollable list display
+            _historyEvents = events;
+          });
+        }
+      }
+    } catch (e) {
+      print('Error reading system logs: $e');
+    }
+  }
+  
+  List<Map<String, String>> _parseSleepWakeEvents(String logOutput) {
+    final events = <Map<String, String>>[];
+    final lines = logOutput.split('\n');
+    
+    for (var line in lines) {
+      try {
+        // More specific patterns for actual sleep/wake events
+        String eventType = '';
+        
+        // Look for specific pmset log patterns
+        // Sleep: only system sleep, not display sleep
+        if (line.contains('Entering Sleep state') ||
+            (line.contains('Sleep') && line.contains('due to') && !line.contains('Display'))) {
+          eventType = 'Sleep';
+        } 
+        // Wake: actual system wake
+        else if (line.contains('Wake from Normal Sleep') ||
+                 line.contains('WakeFromNormalSleep') ||
+                 (line.contains('Wake') && !line.contains('Display') && !line.contains('DarkWake'))) {
+          eventType = 'Wake';
+        } 
+        // Shutdown
+        else if (line.contains('Shutdown cause:')) {
+          eventType = 'Shutdown';
+        } 
+        // Boot
+        else if (line.contains('Boot') && line.contains('args:')) {
+          eventType = 'Boot';
+        }
+        
+        if (eventType.isNotEmpty) {
+          // Try to extract time from log line
+          // pmset log format: YYYY-MM-DD HH:MM:SS
+          final timeMatch = RegExp(r'(\d{4}-\d{2}-\d{2})\s+(\d{2}:\d{2}:\d{2})').firstMatch(line);
+          
+          if (timeMatch != null) {
+            final dateStr = timeMatch.group(1)!;
+            final timeStr = timeMatch.group(2)!;
+            
+            try {
+              final dateTime = DateTime.parse('$dateStr $timeStr');
+              final now = DateTime.now();
+              
+              String formattedTime;
+              if (dateTime.year == now.year && dateTime.month == now.month && dateTime.day == now.day) {
+                formattedTime = 'Today, ${DateFormat('h:mm a').format(dateTime)}';
+              } else if (dateTime.year == now.year && dateTime.month == now.month && dateTime.day == now.day - 1) {
+                formattedTime = 'Yesterday, ${DateFormat('h:mm a').format(dateTime)}';
+              } else {
+                formattedTime = DateFormat('MMM d, h:mm a').format(dateTime);
+              }
+              
+              events.add({
+                'type': eventType,
+                'time': formattedTime,
+                'timestamp': dateTime.millisecondsSinceEpoch.toString(),
+              });
+            } catch (e) {
+              // Skip if can't parse date
+            }
+          }
+        }
+      } catch (e) {
+        // Skip malformed lines
+      }
+    }
+    
+    // Sort by timestamp (newest first) and remove duplicates
+    events.sort((a, b) => int.parse(b['timestamp']!).compareTo(int.parse(a['timestamp']!)));
+    
+    // Remove duplicate events (same type within 1 second)
+    final uniqueEvents = <Map<String, String>>[];
+    int? lastTimestamp;
+    String? lastType;
+    
+    for (var event in events) {
+      final timestamp = int.parse(event['timestamp']!);
+      final type = event['type']!;
+      
+      if (lastTimestamp == null || 
+          (timestamp - lastTimestamp).abs() > 1000 || 
+          type != lastType) {
+        uniqueEvents.add(event);
+        lastTimestamp = timestamp;
+        lastType = type;
+      }
+    }
+    
+    return uniqueEvents;
+  }
+
   // Tray listener methods
   @override
   void onTrayIconMouseDown() async {
@@ -327,17 +449,27 @@ class _SleepTimerHomeState extends State<SleepTimerHome>
   Widget build(BuildContext context) {
     return Scaffold(
       body: Container(
-        decoration: const BoxDecoration(
-          color: Color(0xFF1a1a1a), // Solid Light Black background
+        decoration: BoxDecoration(
+          // Modern gradient background (dark base)
+          gradient: LinearGradient(
+            begin: Alignment.topLeft,
+            end: Alignment.bottomRight,
+            colors: [
+              Color(0xFF0f0f23), // Deep dark blue-black
+              Color(0xFF1a1a2e), // Dark navy
+              Color(0xFF16213e), // Navy blue
+            ],
+          ),
         ),
-                  child: SafeArea(
-            child: Padding(
-              padding: const EdgeInsets.fromLTRB(20.0, 10.0, 20.0, 20.0),
+        child: SafeArea(
+          child: Padding(
+            padding: const EdgeInsets.fromLTRB(20.0, 10.0, 20.0, 20.0),
             child: FadeTransition(
               opacity: _fadeAnimation,
-        child: Column(
-                mainAxisAlignment: MainAxisAlignment.start,
-                children: [
+              child: SingleChildScrollView(
+                child: Column(
+                  mainAxisAlignment: MainAxisAlignment.start,
+                  children: [
                   // Header dengan title dan toggle button
                   Row(
                     mainAxisAlignment: MainAxisAlignment.spaceBetween,
@@ -361,19 +493,33 @@ class _SleepTimerHomeState extends State<SleepTimerHome>
                         child: Container(
                           padding: const EdgeInsets.all(12),
                           decoration: BoxDecoration(
-                            color: _isRunning 
-                              ? const Color(0xFF2d2d2d).withOpacity(0.3)
-                              : (_isTimeMode 
-                                ? const Color(0xFF1e3a8a).withOpacity(0.8)
-                                : const Color(0xFF2d2d2d).withOpacity(0.6)),
+                            // Glass effect for toggle button
+                            gradient: LinearGradient(
+                              begin: Alignment.topLeft,
+                              end: Alignment.bottomRight,
+                              colors: _isRunning 
+                                ? [
+                                    Colors.white.withOpacity(0.02),
+                                    Colors.white.withOpacity(0.01),
+                                  ]
+                                : (_isTimeMode 
+                                  ? [
+                                      Color(0xFF1e3a8a).withOpacity(0.5),
+                                      Color(0xFF0f1e42).withOpacity(0.3),
+                                    ]
+                                  : [
+                                      Colors.white.withOpacity(0.05),
+                                      Colors.white.withOpacity(0.02),
+                                    ]),
+                            ),
                             borderRadius: BorderRadius.circular(20),
                             border: Border.all(
                               color: _isRunning
-                                ? Colors.white.withOpacity(0.1)
+                                ? Colors.white.withOpacity(0.05)
                                 : (_isTimeMode 
-                                  ? const Color(0xFF1e3a8a)
+                                  ? Color(0xFF3b82f6).withOpacity(0.5)
                                   : Colors.white.withOpacity(0.1)),
-                              width: 2,
+                              width: 1,
                             ),
                           ),
                           child: Icon(
@@ -390,19 +536,32 @@ class _SleepTimerHomeState extends State<SleepTimerHome>
                   ),
                   const SizedBox(height: 12),
 
-                  // Timer Display dengan input manual
+                  // Timer Display dengan input manual - Glassmorphism
                   GestureDetector(
                     onTap: () => _showTimerInputDialog(context),
-                    child: Container(
-                      padding: const EdgeInsets.all(24),
-                      decoration: BoxDecoration(
-                        color: const Color(0xFF1a1a1a).withOpacity(0.9),
-                        borderRadius: BorderRadius.circular(15),
-                        border: Border.all(
-                          color: const Color(0xFF1e3a8a).withOpacity(0.5),
-                          width: 1,
-                        ),
-                      ),
+                    child: RepaintBoundary(
+                      child: ClipRRect(
+                        borderRadius: BorderRadius.circular(20),
+                        child: BackdropFilter(
+                          filter: ImageFilter.blur(sigmaX: 10, sigmaY: 10),
+                          child: Container(
+                            padding: const EdgeInsets.all(24),
+                            decoration: BoxDecoration(
+                              // macOS Sequoia ultra-transparent glass
+                              gradient: LinearGradient(
+                                begin: Alignment.topLeft,
+                                end: Alignment.bottomRight,
+                                colors: [
+                                  Colors.white.withOpacity(0.02),
+                                  Colors.white.withOpacity(0.01),
+                                ],
+                              ),
+                              borderRadius: BorderRadius.circular(20),
+                              border: Border.all(
+                                color: Colors.white.withOpacity(0.08),
+                                width: 0.5,
+                              ),
+                            ),
                       child: Column(
                         children: [
                           Text(
@@ -429,6 +588,9 @@ class _SleepTimerHomeState extends State<SleepTimerHome>
                       ),
                     ),
                   ),
+                ),
+              ),
+            ),
                   const SizedBox(height: 12),
 
                   // Time Controls
@@ -499,7 +661,67 @@ class _SleepTimerHomeState extends State<SleepTimerHome>
                       ],
                     ],
                   ),
-                ],
+                  
+                  // Footer - Mac System Log (Scrollable with Fade)
+                  if (_historyEvents.isNotEmpty) ...[
+                    const SizedBox(height: 20),
+                    Container(
+                      height: 80, // Fixed height for ~3 items
+                      padding: const EdgeInsets.symmetric(vertical: 4, horizontal: 20),
+                      decoration: BoxDecoration(
+                        gradient: LinearGradient(
+                          begin: Alignment.topLeft,
+                          end: Alignment.bottomRight,
+                          colors: [
+                            Colors.white.withOpacity(0.015),
+                            Colors.white.withOpacity(0.005),
+                          ],
+                        ),
+                        borderRadius: BorderRadius.circular(12),
+                        border: Border.all(
+                          color: Colors.white.withOpacity(0.05),
+                          width: 0.5,
+                        ),
+                      ),
+                      child: ShaderMask(
+                        shaderCallback: (Rect bounds) {
+                          return LinearGradient(
+                            begin: Alignment.topCenter,
+                            end: Alignment.bottomCenter,
+                            colors: [
+                              Colors.transparent,
+                              Colors.white,
+                              Colors.white,
+                              Colors.transparent,
+                            ],
+                            stops: [0.0, 0.1, 0.9, 1.0],
+                          ).createShader(bounds);
+                        },
+                        blendMode: BlendMode.dstIn,
+                        child: ListView.builder(
+                          physics: BouncingScrollPhysics(),
+                          itemCount: _historyEvents.length,
+                          itemBuilder: (context, index) {
+                            final event = _historyEvents[index];
+                            return Padding(
+                              padding: const EdgeInsets.symmetric(vertical: 4.0),
+                              child: Text(
+                                '${event['type']}: ${event['time']}',
+                                style: TextStyle(
+                                  fontSize: 12,
+                                  color: Colors.white.withOpacity(0.7),
+                                  fontFamily: 'monospace',
+                                  height: 1.6,
+                                ),
+                              ),
+                            );
+                          },
+                        ),
+                      ),
+                    ),
+                  ],
+                  ],
+                ),
               ),
             ),
           ),
@@ -522,10 +744,18 @@ class _SleepTimerHomeState extends State<SleepTimerHome>
         const SizedBox(height: 8),
         Container(
           decoration: BoxDecoration(
-            color: const Color(0xFF2d2d2d).withOpacity(0.7),
+            // Fake glassmorphism - lightweight gradient
+            gradient: LinearGradient(
+              begin: Alignment.topLeft,
+              end: Alignment.bottomRight,
+              colors: [
+                Colors.white.withOpacity(0.06),
+                Colors.white.withOpacity(0.02),
+              ],
+            ),
             borderRadius: BorderRadius.circular(15),
             border: Border.all(
-              color: const Color(0xFF1e3a8a).withOpacity(0.3),
+              color: Colors.white.withOpacity(0.1),
               width: 1,
             ),
           ),
@@ -551,10 +781,18 @@ class _SleepTimerHomeState extends State<SleepTimerHome>
                   width: 50,
                   height: 32,
                   decoration: BoxDecoration(
-                    color: const Color(0xFF1a1a1a).withOpacity(0.9),
-                    borderRadius: BorderRadius.circular(6),
+                    // Subtle inner glass effect
+                    gradient: LinearGradient(
+                      begin: Alignment.topLeft,
+                      end: Alignment.bottomRight,
+                      colors: [
+                        Color(0xFF0f0f23).withOpacity(0.6),
+                        Color(0xFF16213e).withOpacity(0.4),
+                      ],
+                    ),
+                    borderRadius: BorderRadius.circular(8),
                     border: Border.all(
-                      color: const Color(0xFF1e3a8a).withOpacity(0.3),
+                      color: Colors.white.withOpacity(0.08),
                       width: 1,
                     ),
                   ),
@@ -595,11 +833,26 @@ class _SleepTimerHomeState extends State<SleepTimerHome>
       child: Container(
         padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
         decoration: BoxDecoration(
-          color: isSelected ? const Color(0xFF1e3a8a).withOpacity(0.8) : const Color(0xFF2d2d2d).withOpacity(0.6),
+          // Glass effect for mode buttons - clean, no shadow
+          gradient: LinearGradient(
+            begin: Alignment.topLeft,
+            end: Alignment.bottomRight,
+            colors: isSelected 
+              ? [
+                  Color(0xFF1e3a8a).withOpacity(0.25),
+                  Color(0xFF0f1e42).withOpacity(0.15),
+                ]
+              : [
+                  Colors.white.withOpacity(0.015),
+                  Colors.white.withOpacity(0.005),
+                ],
+          ),
           borderRadius: BorderRadius.circular(15),
           border: Border.all(
-            color: isSelected ? const Color(0xFF1e3a8a) : Colors.white.withOpacity(0.1),
-            width: 2,
+            color: isSelected 
+              ? Color(0xFF3b82f6).withOpacity(0.3)
+              : Colors.white.withOpacity(0.05),
+            width: 0.5,
           ),
         ),
         child: Icon(
@@ -617,11 +870,19 @@ class _SleepTimerHomeState extends State<SleepTimerHome>
       child: Container(
         padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 10),
         decoration: BoxDecoration(
-          color: color.withOpacity(0.3),
+          // Glass effect with color tint - clean, no glow
+          gradient: LinearGradient(
+            begin: Alignment.topLeft,
+            end: Alignment.bottomRight,
+            colors: [
+              color.withOpacity(0.08),
+              color.withOpacity(0.04),
+            ],
+          ),
           borderRadius: BorderRadius.circular(15),
           border: Border.all(
-            color: color,
-            width: 2,
+            color: color.withOpacity(0.2),
+            width: 0.5,
           ),
         ),
         child: Icon(
