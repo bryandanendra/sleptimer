@@ -14,8 +14,8 @@ void main() async {
   await windowManager.ensureInitialized();
   
   // Configure window settings
-  await windowManager.setMinimumSize(const Size(550, 450));
-  await windowManager.setSize(const Size(550, 450));
+  await windowManager.setMinimumSize(const Size(550, 500));
+  await windowManager.setSize(const Size(550, 500));
   await windowManager.setTitle('RestClock');
   await windowManager.setResizable(true);
   
@@ -56,7 +56,7 @@ class SleepTimerHome extends StatefulWidget {
 }
 
 class _SleepTimerHomeState extends State<SleepTimerHome>
-    with TickerProviderStateMixin, TrayListener {
+    with TickerProviderStateMixin, TrayListener, WidgetsBindingObserver {
   int _hours = 0;
   int _minutes = 25;
   int _seconds = 0;
@@ -65,6 +65,7 @@ class _SleepTimerHomeState extends State<SleepTimerHome>
   bool _isSleepMode = true;
   bool _isTimeMode = false; // Mode waktu jam
   Timer? _timer;
+  Timer? _logTimer; // Timer untuk update log otomatis
   late AnimationController _animationController;
   late Animation<double> _fadeAnimation;
   
@@ -74,6 +75,7 @@ class _SleepTimerHomeState extends State<SleepTimerHome>
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
     _calculateTotalSeconds();
     _animationController = AnimationController(
       duration: const Duration(milliseconds: 300),
@@ -96,14 +98,29 @@ class _SleepTimerHomeState extends State<SleepTimerHome>
     
     // Load Mac system logs (last 3 activities)
     _loadMacSystemLogs();
+    
+    // Auto refresh logs every 60 seconds
+    _logTimer = Timer.periodic(const Duration(seconds: 60), (timer) {
+      _loadMacSystemLogs();
+    });
   }
 
   @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
     _timer?.cancel();
+    _logTimer?.cancel();
     _animationController.dispose();
     trayManager.removeListener(this);
     super.dispose();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed) {
+      // Refresh logs when app comes to foreground -> likely after wake
+      _loadMacSystemLogs();
+    }
   }
 
   // Initialize tray
@@ -256,7 +273,8 @@ class _SleepTimerHomeState extends State<SleepTimerHome>
       if (_isSleepMode) {
         await Process.run('pmset', ['sleepnow']);
       } else {
-        await Process.run('sudo', ['shutdown', '-h', 'now']);
+        // Menggunakan AppleScript untuk shutdown tanpa sudo (aman untuk GUI app)
+        await Process.run('osascript', ['-e', 'tell application "System Events" to shut down']);
       }
     } catch (e) {
       if (mounted) {
@@ -297,13 +315,15 @@ class _SleepTimerHomeState extends State<SleepTimerHome>
   Future<void> _loadMacSystemLogs() async {
     try {
       // Run pmset -g log to get sleep/wake history
-      final result = await Process.run('pmset', ['-g', 'log']);
+      // Run pmset -g log to get sleep/wake history
+      // Filter for relevant events first using grep, then take last 100 relevant lines
+      final result = await Process.run('bash', ['-c', 'pmset -g log | grep -E "Sleep|Wake|Shutdown|Start" | tail -n 1000']);
       
       if (result.exitCode == 0) {
         final output = result.stdout.toString();
         final events = _parseSleepWakeEvents(output);
         
-        if (mounted && events.isNotEmpty) {
+        if (mounted) { // Always update, events might be empty or changed
           setState(() {
             // Store events for scrollable list display
             _historyEvents = events;
@@ -394,9 +414,14 @@ class _SleepTimerHomeState extends State<SleepTimerHome>
       final timestamp = int.parse(event['timestamp']!);
       final type = event['type']!;
       
+      // Filter logic:
+      // 1. Always keep if it's the first item processed (First = Newest).
+      // 2. Always keep if the Type is different from the last one (e.g. Sleep -> Wake).
+      // 3. If Type is SAME, only keep if the time gap is huge (> 2 minutes).
+      //    This handles "Kernel Wake" then "User Wake" appearing within seconds -> we keep only the Newest one.
       if (lastTimestamp == null || 
-          (timestamp - lastTimestamp).abs() > 1000 || 
-          type != lastType) {
+          type != lastType ||
+          (timestamp - lastTimestamp).abs() > 90000) { // 90 seconds threshold
         uniqueEvents.add(event);
         lastTimestamp = timestamp;
         lastType = type;
@@ -455,9 +480,8 @@ class _SleepTimerHomeState extends State<SleepTimerHome>
             begin: Alignment.topLeft,
             end: Alignment.bottomRight,
             colors: [
-              Color(0xFF0f0f23), // Deep dark blue-black
-              Color(0xFF1a1a2e), // Dark navy
-              Color(0xFF16213e), // Navy blue
+              Color(0xFF242424), // Deep gray
+              Color(0xFF000000), // Pure black
             ],
           ),
         ),
@@ -466,262 +490,268 @@ class _SleepTimerHomeState extends State<SleepTimerHome>
             padding: const EdgeInsets.fromLTRB(20.0, 10.0, 20.0, 20.0),
             child: FadeTransition(
               opacity: _fadeAnimation,
-              child: SingleChildScrollView(
-                child: Column(
-                  mainAxisAlignment: MainAxisAlignment.start,
-                  children: [
-                  // Header dengan title dan toggle button
-                  Row(
-                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+              child: Column(
+                children: [
+                  // Top Content Group
+                  Column(
+                    mainAxisSize: MainAxisSize.min,
                     children: [
-                      const Expanded(
-                        child: Text(
-                          'RestClock',
-                          style: TextStyle(
-                            fontSize: 32,
-                            fontWeight: FontWeight.bold,
-                            color: Colors.white,
-                            letterSpacing: 1,
-                          ),
-                        ),
-                      ),
-                      // Toggle button di pojok kanan
-                      MouseRegion(
-                        cursor: _isRunning ? SystemMouseCursors.basic : SystemMouseCursors.click,
-                        child: GestureDetector(
-                          onTap: _isRunning ? null : _toggleTimeMode,
-                        child: Container(
-                          padding: const EdgeInsets.all(12),
-                          decoration: BoxDecoration(
-                            // Glass effect for toggle button
-                            gradient: LinearGradient(
-                              begin: Alignment.topLeft,
-                              end: Alignment.bottomRight,
-                              colors: _isRunning 
-                                ? [
-                                    Colors.white.withOpacity(0.02),
-                                    Colors.white.withOpacity(0.01),
-                                  ]
-                                : (_isTimeMode 
-                                  ? [
-                                      Color(0xFF1e3a8a).withOpacity(0.5),
-                                      Color(0xFF0f1e42).withOpacity(0.3),
-                                    ]
-                                  : [
-                                      Colors.white.withOpacity(0.05),
-                                      Colors.white.withOpacity(0.02),
-                                    ]),
-                            ),
-                            borderRadius: BorderRadius.circular(20),
-                            border: Border.all(
-                              color: _isRunning
-                                ? Colors.white.withOpacity(0.05)
-                                : (_isTimeMode 
-                                  ? Color(0xFF3b82f6).withOpacity(0.5)
-                                  : Colors.white.withOpacity(0.1)),
-                              width: 1,
-                            ),
-                          ),
-                          child: Icon(
-                            _isTimeMode ? Icons.access_time : Icons.timer,
-                            color: _isRunning 
-                              ? Colors.white.withOpacity(0.3)
-                              : (_isTimeMode ? Colors.white : Colors.white70),
-                            size: 24,
-                          ),
-                        ),
-                        ),
-                      ),
-                    ],
-                  ),
-                  const SizedBox(height: 12),
-
-                  // Timer Display dengan input manual - Glassmorphism
-                  GestureDetector(
-                    onTap: () => _showTimerInputDialog(context),
-                    child: RepaintBoundary(
-                      child: ClipRRect(
-                        borderRadius: BorderRadius.circular(20),
-                        child: BackdropFilter(
-                          filter: ImageFilter.blur(sigmaX: 10, sigmaY: 10),
-                          child: Container(
-                            padding: const EdgeInsets.all(24),
-                            decoration: BoxDecoration(
-                              // macOS Sequoia ultra-transparent glass
-                              gradient: LinearGradient(
-                                begin: Alignment.topLeft,
-                                end: Alignment.bottomRight,
-                                colors: [
-                                  Colors.white.withOpacity(0.02),
-                                  Colors.white.withOpacity(0.01),
-                                ],
-                              ),
-                              borderRadius: BorderRadius.circular(20),
-                              border: Border.all(
-                                color: Colors.white.withOpacity(0.08),
-                                width: 0.5,
-                              ),
-                            ),
-                      child: Column(
+                      // Header dengan title dan toggle button
+                      Row(
+                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
                         children: [
-                          Text(
-                            _formatTime(_hours, _minutes, _seconds),
-                            style: const TextStyle(
-                              fontSize: 48,
-                              fontWeight: FontWeight.w300,
-                              color: Colors.white,
-                              fontFamily: 'monospace',
+                          const Expanded(
+                            child: Text(
+                              'RestClock',
+                              style: TextStyle(
+                                fontSize: 32,
+                                fontWeight: FontWeight.bold,
+                                color: Colors.white,
+                                letterSpacing: 1,
+                              ),
                             ),
                           ),
-                          if (_isTimeMode && _isRunning) ...[
-                            const SizedBox(height: 8),
-                            Text(
-                              'Target: ${_getTargetTimeString()}',
-                              style: const TextStyle(
-                                fontSize: 14,
-                                color: Colors.white70,
-                                fontFamily: 'monospace',
+                          // Toggle button di pojok kanan
+                          MouseRegion(
+                            cursor: _isRunning ? SystemMouseCursors.basic : SystemMouseCursors.click,
+                            child: GestureDetector(
+                              onTap: _isRunning ? null : _toggleTimeMode,
+                              child: Container(
+                                padding: const EdgeInsets.all(12),
+                                decoration: BoxDecoration(
+                                  // Glass effect for toggle button
+                                  gradient: LinearGradient(
+                                    begin: Alignment.topLeft,
+                                    end: Alignment.bottomRight,
+                                    colors: _isRunning 
+                                      ? [
+                                          Colors.white.withOpacity(0.02),
+                                          Colors.white.withOpacity(0.01),
+                                        ]
+                                      : (_isTimeMode 
+                                        ? [
+                                            Color(0xFF1e3a8a).withOpacity(0.5),
+                                            Color(0xFF0f1e42).withOpacity(0.3),
+                                          ]
+                                        : [
+                                            Colors.white.withOpacity(0.05),
+                                            Colors.white.withOpacity(0.02),
+                                          ]),
+                                  ),
+                                  borderRadius: BorderRadius.circular(20),
+                                  border: Border.all(
+                                    color: _isRunning
+                                      ? Colors.white.withOpacity(0.05)
+                                      : (_isTimeMode 
+                                        ? Color(0xFF3b82f6).withOpacity(0.5)
+                                        : Colors.white.withOpacity(0.1)),
+                                    width: 1,
+                                  ),
+                                ),
+                                child: Icon(
+                                  _isTimeMode ? Icons.access_time : Icons.timer,
+                                  color: _isRunning 
+                                    ? Colors.white.withOpacity(0.3)
+                                    : (_isTimeMode ? Colors.white : Colors.white70),
+                                  size: 24,
+                                ),
                               ),
+                            ),
+                          ),
+                        ],
+                      ),
+                      const SizedBox(height: 12),
+
+                      // Timer Display dengan input manual - Glassmorphism
+                      GestureDetector(
+                        onTap: () => _showTimerInputDialog(context),
+                        child: RepaintBoundary(
+                          child: ClipRRect(
+                            borderRadius: BorderRadius.circular(20),
+                            child: BackdropFilter(
+                              filter: ImageFilter.blur(sigmaX: 10, sigmaY: 10),
+                              child: Container(
+                                padding: const EdgeInsets.all(24),
+                                decoration: BoxDecoration(
+                                  // macOS Sequoia ultra-transparent glass
+                                  gradient: LinearGradient(
+                                    begin: Alignment.topLeft,
+                                    end: Alignment.bottomRight,
+                                    colors: [
+                                      Colors.white.withOpacity(0.02),
+                                      Colors.white.withOpacity(0.01),
+                                    ],
+                                  ),
+                                  borderRadius: BorderRadius.circular(20),
+                                  border: Border.all(
+                                    color: Colors.white.withOpacity(0.08),
+                                    width: 0.5,
+                                  ),
+                                ),
+                                child: Column(
+                                  children: [
+                                    Text(
+                                      _formatTime(_hours, _minutes, _seconds),
+                                      style: const TextStyle(
+                                        fontSize: 48,
+                                        fontWeight: FontWeight.w300,
+                                        color: Colors.white,
+                                        fontFamily: 'monospace',
+                                      ),
+                                    ),
+                                    if (_isTimeMode && _isRunning) ...[
+                                      const SizedBox(height: 8),
+                                      Text(
+                                        'Target: ${_getTargetTimeString()}',
+                                        style: const TextStyle(
+                                          fontSize: 14,
+                                          color: Colors.white70,
+                                          fontFamily: 'monospace',
+                                        ),
+                                      ),
+                                    ],
+                                  ],
+                                ),
+                              ),
+                            ),
+                          ),
+                        ),
+                      ),
+                      const SizedBox(height: 12),
+
+                      // Time Controls
+                      Row(
+                        mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+                        children: [
+                          _buildTimeSpinner('Hours', _hours, (value) {
+                            setState(() {
+                              _hours = value;
+                              _calculateTotalSeconds();
+                            });
+                          }, 0, 23),
+                          _buildTimeSpinner('Minutes', _minutes, (value) {
+                            setState(() {
+                              _minutes = value;
+                              _calculateTotalSeconds();
+                            });
+                          }, 0, 59),
+                          _buildTimeSpinner('Seconds', _seconds, (value) {
+                            setState(() {
+                              _seconds = value;
+                              _calculateTotalSeconds();
+                            });
+                          }, 0, 59),
+                        ],
+                      ),
+                      const SizedBox(height: 12),
+
+                      // All Buttons in One Row
+                      Row(
+                        mainAxisAlignment: MainAxisAlignment.center,
+                        children: [
+                          _buildModeButton(
+                            'Sleep',
+                            Icons.bedtime,
+                            _isSleepMode,
+                            () => setState(() => _isSleepMode = true),
+                          ),
+                          const SizedBox(width: 12),
+                          _buildModeButton(
+                            'Shutdown',
+                            Icons.power_settings_new,
+                            !_isSleepMode,
+                            () => setState(() => _isSleepMode = false),
+                          ),
+                          const SizedBox(width: 12),
+                          _buildActionButton(
+                            'Start',
+                            Icons.play_arrow,
+                            Colors.green,
+                            _startTimer,
+                          ),
+                          if (_isRunning) ...[
+                            const SizedBox(width: 12),
+                            _buildActionButton(
+                              'Stop',
+                              Icons.stop,
+                              Colors.red,
+                              _stopTimer,
+                            ),
+                            const SizedBox(width: 12),
+                            _buildActionButton(
+                              'Reset',
+                              Icons.refresh,
+                              Colors.orange,
+                              _resetTimer,
                             ),
                           ],
                         ],
                       ),
-                    ),
-                  ),
-                ),
-              ),
-            ),
-                  const SizedBox(height: 12),
-
-                  // Time Controls
-                  Row(
-                    mainAxisAlignment: MainAxisAlignment.spaceEvenly,
-                    children: [
-                      _buildTimeSpinner('Hours', _hours, (value) {
-                        setState(() {
-                          _hours = value;
-                          _calculateTotalSeconds();
-                        });
-                      }, 0, 23),
-                      _buildTimeSpinner('Minutes', _minutes, (value) {
-                        setState(() {
-                          _minutes = value;
-                          _calculateTotalSeconds();
-                        });
-                      }, 0, 59),
-                      _buildTimeSpinner('Seconds', _seconds, (value) {
-                        setState(() {
-                          _seconds = value;
-                          _calculateTotalSeconds();
-                        });
-                      }, 0, 59),
-                    ],
-                  ),
-                  const SizedBox(height: 12),
-
-                  // All Buttons in One Row
-                  Row(
-          mainAxisAlignment: MainAxisAlignment.center,
-                    children: [
-                      _buildModeButton(
-                        'Sleep',
-                        Icons.bedtime,
-                        _isSleepMode,
-                        () => setState(() => _isSleepMode = true),
-                      ),
-                      const SizedBox(width: 12),
-                      _buildModeButton(
-                        'Shutdown',
-                        Icons.power_settings_new,
-                        !_isSleepMode,
-                        () => setState(() => _isSleepMode = false),
-                      ),
-                      const SizedBox(width: 12),
-                      _buildActionButton(
-                        'Start',
-                        Icons.play_arrow,
-                        Colors.green,
-                        _startTimer,
-                      ),
-                      if (_isRunning) ...[
-                        const SizedBox(width: 12),
-                        _buildActionButton(
-                          'Stop',
-                          Icons.stop,
-                          Colors.red,
-                          _stopTimer,
-                        ),
-                        const SizedBox(width: 12),
-                        _buildActionButton(
-                          'Reset',
-                          Icons.refresh,
-                          Colors.orange,
-                          _resetTimer,
-                        ),
-                      ],
                     ],
                   ),
                   
-                  // Footer - Mac System Log (Scrollable with Fade)
+                  // Footer - Sticky History Log
                   if (_historyEvents.isNotEmpty) ...[
                     const SizedBox(height: 20),
-                    Container(
-                      height: 80, // Fixed height for ~3 items
-                      padding: const EdgeInsets.symmetric(vertical: 4, horizontal: 20),
-                      decoration: BoxDecoration(
-                        gradient: LinearGradient(
-                          begin: Alignment.topLeft,
-                          end: Alignment.bottomRight,
-                          colors: [
-                            Colors.white.withOpacity(0.015),
-                            Colors.white.withOpacity(0.005),
-                          ],
-                        ),
-                        borderRadius: BorderRadius.circular(12),
-                        border: Border.all(
-                          color: Colors.white.withOpacity(0.05),
-                          width: 0.5,
-                        ),
-                      ),
-                      child: ShaderMask(
-                        shaderCallback: (Rect bounds) {
-                          return LinearGradient(
-                            begin: Alignment.topCenter,
-                            end: Alignment.bottomCenter,
+                    Expanded(
+                      child: Container(
+                        // No fixed height, fills remaining space
+                        width: double.infinity,
+                        padding: const EdgeInsets.symmetric(vertical: 4, horizontal: 20),
+                        decoration: BoxDecoration(
+                          gradient: LinearGradient(
+                            begin: Alignment.topLeft,
+                            end: Alignment.bottomRight,
                             colors: [
-                              Colors.transparent,
-                              Colors.white,
-                              Colors.white,
-                              Colors.transparent,
+                              Colors.white.withOpacity(0.015),
+                              Colors.white.withOpacity(0.005),
                             ],
-                            stops: [0.0, 0.1, 0.9, 1.0],
-                          ).createShader(bounds);
-                        },
-                        blendMode: BlendMode.dstIn,
-                        child: ListView.builder(
-                          physics: BouncingScrollPhysics(),
-                          itemCount: _historyEvents.length,
-                          itemBuilder: (context, index) {
-                            final event = _historyEvents[index];
-                            return Padding(
-                              padding: const EdgeInsets.symmetric(vertical: 4.0),
-                              child: Text(
-                                '${event['type']}: ${event['time']}',
-                                style: TextStyle(
-                                  fontSize: 12,
-                                  color: Colors.white.withOpacity(0.7),
-                                  fontFamily: 'monospace',
-                                  height: 1.6,
-                                ),
-                              ),
-                            );
+                          ),
+                          borderRadius: BorderRadius.circular(12),
+                          border: Border.all(
+                            color: Colors.white.withOpacity(0.05),
+                            width: 0.5,
+                          ),
+                        ),
+                        child: ShaderMask(
+                          shaderCallback: (Rect bounds) {
+                            return LinearGradient(
+                              begin: Alignment.topCenter,
+                              end: Alignment.bottomCenter,
+                              colors: [
+                                Colors.transparent,
+                                Colors.white,
+                                Colors.white,
+                                Colors.transparent,
+                              ],
+                              stops: [0.0, 0.1, 0.9, 1.0],
+                            ).createShader(bounds);
                           },
+                          blendMode: BlendMode.dstIn,
+                          child: ListView.builder(
+                            physics: const BouncingScrollPhysics(),
+                            itemCount: _historyEvents.length,
+                            itemBuilder: (context, index) {
+                              final event = _historyEvents[index];
+                              return Padding(
+                                padding: const EdgeInsets.symmetric(vertical: 4.0),
+                                child: Text(
+                                  '${event['type']}: ${event['time']}',
+                                  style: TextStyle(
+                                    fontSize: 12,
+                                    color: Colors.white.withOpacity(0.7),
+                                    fontFamily: 'monospace',
+                                    height: 1.6,
+                                  ),
+                                ),
+                              );
+                            },
+                          ),
                         ),
                       ),
                     ),
                   ],
-                  ],
-                ),
+                ],
               ),
             ),
           ),

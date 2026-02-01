@@ -1,48 +1,52 @@
 #!/bin/bash
 
 # RestClock Installation Script
-echo "🚀 Installing RestClock..."
+# This script builds the app in release mode and installs it to /Applications
 
-# Navigate to project directory
-cd "$(dirname "$0")"
+set -e  # Exit on error
 
-# Check if app is built
-if [ ! -d "build/macos/Build/Products/Release/sleptimer.app" ]; then
-    echo "❌ App not built. Building now..."
-    flutter build macos --release
-    if [ $? -ne 0 ]; then
-        echo "❌ Build failed. Please check Flutter installation."
-        exit 1
-    fi
+echo "🚀 Building RestClock..."
+echo "This may take a few minutes..."
+
+# Build release version
+flutter build macos --release
+
+echo ""
+echo "✅ Build complete!"
+echo ""
+
+# App path
+APP_PATH="build/macos/Build/Products/Release/sleptimer.app"
+INSTALL_PATH="/Applications/RestClock.app"
+
+# Check if app was built
+if [ ! -d "$APP_PATH" ]; then
+    echo "❌ Error: App not found at $APP_PATH"
+    exit 1
 fi
 
-# Create Applications directory if it doesn't exist
-INSTALL_DIR="$HOME/Applications/RestClock"
-mkdir -p "$INSTALL_DIR"
+echo "📦 Installing to /Applications..."
 
-# Copy app to Applications
-echo "📦 Copying RestClock to Applications..."
-cp -R "build/macos/Build/Products/Release/sleptimer.app" "$INSTALL_DIR/"
+# Remove old version if exists
+if [ -d "$INSTALL_PATH" ]; then
+    echo "🗑️  Removing old version..."
+    rm -rf "$INSTALL_PATH"
+fi
 
-# Set permissions
-chmod +x "$INSTALL_DIR/sleptimer.app/Contents/MacOS/sleptimer"
+# Copy to Applications
+cp -R "$APP_PATH" "$INSTALL_PATH"
 
-echo "✅ RestClock installed successfully!"
 echo ""
-echo "📍 Location: $INSTALL_DIR/sleptimer.app"
+echo "✅ Installation complete!"
 echo ""
-echo "🎯 To launch RestClock:"
-echo "   1. Open Finder"
-echo "   2. Go to Applications > RestClock"
-echo "   3. Double-click RestClock.app"
+echo "🎉 RestClock has been installed to /Applications"
 echo ""
-echo "🔄 Or use command line:"
-echo "   open $INSTALL_DIR/sleptimer.app"
+echo "To run:"
+echo "  - Open Spotlight (Cmd + Space)"
+echo "  - Type 'RestClock'"
+echo "  - Press Enter"
 echo ""
-echo "📋 Features:"
-echo "   • Timer mode: Set countdown duration"
-echo "   • Time mode: Set target time for sleep/shutdown"
-echo "   • Menu bar integration"
-echo "   • Sleep and Shutdown options"
+echo "Or find it in your Applications folder!"
 echo ""
-echo "🎉 Enjoy using RestClock!"
+echo "📝 Note: On first launch, macOS may ask for permissions."
+echo "   Just click 'Open' when prompted."
