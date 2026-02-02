@@ -315,9 +315,9 @@ class _SleepTimerHomeState extends State<SleepTimerHome>
   Future<void> _loadMacSystemLogs() async {
     try {
       // Run pmset -g log to get sleep/wake history
-      // Run pmset -g log to get sleep/wake history
-      // Filter for relevant events first using grep, then take last 100 relevant lines
-      final result = await Process.run('bash', ['-c', 'pmset -g log | grep -E "Sleep|Wake|Shutdown|Start" | tail -n 1000']);
+      // Note: grep case insensitive (-i) and extended regex (-E)
+      // Increased to 5000 lines to cover more days (1000 lines only covered ~24h due to heavy system logs)
+      final result = await Process.run('bash', ['-c', 'pmset -g log | grep -iE "Sleep|Wake|Shutdown|Start" | tail -n 5000']);
       
       if (result.exitCode == 0) {
         final output = result.stdout.toString();
@@ -339,35 +339,48 @@ class _SleepTimerHomeState extends State<SleepTimerHome>
     final events = <Map<String, String>>[];
     final lines = logOutput.split('\n');
     
+    // 1. Cek Boot Time dari Summary Line (Paling Akurat untuk Last Boot)
+    // Contoh: Total Sleep/Wakes since boot at 2026-02-02 11:23:36 +0700 :0
+    final bootSummaryMatch = RegExp(r'Total Sleep/Wakes since boot at (\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})').firstMatch(logOutput);
+    if (bootSummaryMatch != null) {
+      final bootTimeStr = bootSummaryMatch.group(1)!;
+      try {
+        final bootTime = DateTime.parse(bootTimeStr);
+        events.add({
+          'type': 'Boot',
+          'time': _formatTimeForLog(bootTime),
+          'timestamp': bootTime.millisecondsSinceEpoch.toString(),
+        });
+      } catch (e) {
+        // Ignore parse error
+      }
+    }
+
     for (var line in lines) {
       try {
-        // More specific patterns for actual sleep/wake events
         String eventType = '';
         
-        // Look for specific pmset log patterns
-        // Sleep: only system sleep, not display sleep
+        // 2. Parsing Event Historis
         if (line.contains('Entering Sleep state') ||
             (line.contains('Sleep') && line.contains('due to') && !line.contains('Display'))) {
           eventType = 'Sleep';
         } 
-        // Wake: actual system wake
+        // Wake: Perketat agar tidak menangkap sembarang log
         else if (line.contains('Wake from Normal Sleep') ||
-                 line.contains('WakeFromNormalSleep') ||
-                 (line.contains('Wake') && !line.contains('Display') && !line.contains('DarkWake'))) {
+                 line.contains('WakeFromNormalSleep') || 
+                 (line.contains('Wake') && line.contains('due to') && !line.contains('Display') && !line.contains('DarkWake'))) {
           eventType = 'Wake';
         } 
         // Shutdown
-        else if (line.contains('Shutdown cause:')) {
+        else if (line.contains('Shutdown cause') || line.contains('SHUTDOWN')) {
           eventType = 'Shutdown';
         } 
-        // Boot
+        // Boot logs historis (jika ada)
         else if (line.contains('Boot') && line.contains('args:')) {
           eventType = 'Boot';
         }
         
         if (eventType.isNotEmpty) {
-          // Try to extract time from log line
-          // pmset log format: YYYY-MM-DD HH:MM:SS
           final timeMatch = RegExp(r'(\d{4}-\d{2}-\d{2})\s+(\d{2}:\d{2}:\d{2})').firstMatch(line);
           
           if (timeMatch != null) {
@@ -376,24 +389,13 @@ class _SleepTimerHomeState extends State<SleepTimerHome>
             
             try {
               final dateTime = DateTime.parse('$dateStr $timeStr');
-              final now = DateTime.now();
-              
-              String formattedTime;
-              if (dateTime.year == now.year && dateTime.month == now.month && dateTime.day == now.day) {
-                formattedTime = 'Today, ${DateFormat('h:mm a').format(dateTime)}';
-              } else if (dateTime.year == now.year && dateTime.month == now.month && dateTime.day == now.day - 1) {
-                formattedTime = 'Yesterday, ${DateFormat('h:mm a').format(dateTime)}';
-              } else {
-                formattedTime = DateFormat('MMM d, h:mm a').format(dateTime);
-              }
-              
               events.add({
                 'type': eventType,
-                'time': formattedTime,
+                'time': _formatTimeForLog(dateTime),
                 'timestamp': dateTime.millisecondsSinceEpoch.toString(),
               });
             } catch (e) {
-              // Skip if can't parse date
+              // Skip
             }
           }
         }
@@ -402,33 +404,56 @@ class _SleepTimerHomeState extends State<SleepTimerHome>
       }
     }
     
-    // Sort by timestamp (newest first) and remove duplicates
+    // Sort Newest -> Oldest
     events.sort((a, b) => int.parse(b['timestamp']!).compareTo(int.parse(a['timestamp']!)));
     
-    // Remove duplicate events (same type within 1 second)
+    // Filter Duplikasi & Logic Pembersihan
     final uniqueEvents = <Map<String, String>>[];
-    int? lastTimestamp;
     String? lastType;
     
+    // Logic: STRICT ALTERNATING (Hanya simpan PERUBAHAN Status)
+    // Wake -> Sleep -> Wake -> Shutdown -> Boot
+    // Tidak boleh ada: Sleep -> Sleep atau Wake -> Wake
+    
     for (var event in events) {
-      final timestamp = int.parse(event['timestamp']!);
       final type = event['type']!;
       
-      // Filter logic:
-      // 1. Always keep if it's the first item processed (First = Newest).
-      // 2. Always keep if the Type is different from the last one (e.g. Sleep -> Wake).
-      // 3. If Type is SAME, only keep if the time gap is huge (> 2 minutes).
-      //    This handles "Kernel Wake" then "User Wake" appearing within seconds -> we keep only the Newest one.
-      if (lastTimestamp == null || 
-          type != lastType ||
-          (timestamp - lastTimestamp).abs() > 90000) { // 90 seconds threshold
+      bool shouldKeep = false;
+      
+      if (lastType == null) {
+        shouldKeep = true;
+      } else {
+        // Khusus Boot: Selalu simpan (karena restart bisa Boot -> Boot)
+        // Tapi tetap filter jika duplikat persis di detik yang sama (sudah dihandle sort & unique set logic if needed, but here simple logic)
+        if (type == 'Boot') {
+           shouldKeep = true;
+        } 
+        // Untuk Wake, Sleep, Shutdown: Hanya simpan jika STATUS BERUBAH
+        else if (type != lastType) {
+          shouldKeep = true;
+        }
+        // Jika type == lastType (e.g. Sleep -> Sleep), SKIP (Buang Sleep maintenance)
+      }
+
+      if (shouldKeep) {
         uniqueEvents.add(event);
-        lastTimestamp = timestamp;
         lastType = type;
       }
     }
     
     return uniqueEvents;
+  }
+
+  // Helper formatting
+  String _formatTimeForLog(DateTime dateTime) {
+    final now = DateTime.now();
+    if (dateTime.year == now.year && dateTime.month == now.month && dateTime.day == now.day) {
+      return 'Today, ${DateFormat('h:mm a').format(dateTime)}';
+    } else if (dateTime.year == now.year && dateTime.month == now.month && dateTime.day == now.day - 1) {
+      return 'Yesterday, ${DateFormat('h:mm a').format(dateTime)}';
+    } else {
+      return DateFormat('MMM d, h:mm a').format(dateTime);
+    }
   }
 
   // Tray listener methods
