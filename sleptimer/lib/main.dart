@@ -21,7 +21,7 @@ void main() async {
   
   // Initialize tray manager
   try {
-    await trayManager.setIcon('assets/icon.png');
+    await trayManager.setIcon('assets/icon.png', isTemplate: true);
   } catch (e) {
     print('Failed to set tray icon in main: $e');
     // Continue without custom icon
@@ -128,7 +128,9 @@ class _SleepTimerHomeState extends State<SleepTimerHome>
     try {
       // Try to set custom icon, fallback to default if fails
       try {
-        await trayManager.setIcon('assets/icon.png');
+        // isTemplate: true membuat macOS otomatis mewarnai icon (Putih di Dark mode, Hitam di Light mode)
+        // Pastikan 'assets/icon.png' adalah file PNG hitam transparan (siluet)
+        await trayManager.setIcon('assets/icon.png', isTemplate: true);
       } catch (e) {
         print('Failed to set custom icon, using default: $e');
         // Don't set icon, let it use default

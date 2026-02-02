@@ -21,9 +21,9 @@ DMG_DIR="RestClock_DMG"
 rm -rf "$DMG_DIR"
 mkdir -p "$DMG_DIR"
 
-# Copy app to DMG directory
+# Copy app to DMG directory and rename to RestClock
 echo "📋 Copying RestClock to DMG..."
-cp -R "build/macos/Build/Products/Release/sleptimer.app" "$DMG_DIR/"
+cp -R "build/macos/Build/Products/Release/sleptimer.app" "$DMG_DIR/RestClock.app"
 
 # Create Applications shortcut
 echo "🔗 Creating Applications shortcut..."
