@@ -30,7 +30,7 @@ echo "🔗 Creating Applications shortcut..."
 ln -s "/Applications" "$DMG_DIR/Applications"
 
 # Create DMG file
-DMG_NAME="RestClock_v1.0.dmg"
+DMG_NAME="RestClock_v2.0.dmg"
 echo "🎯 Creating DMG file: $DMG_NAME"
 
 # Remove existing DMG

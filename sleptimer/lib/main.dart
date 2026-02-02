@@ -1,9 +1,10 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/foundation.dart'; // Required for compute
 import 'dart:async';
 import 'dart:io';
 import 'dart:ui';
 import 'package:window_manager/window_manager.dart';
-import 'package:tray_manager/tray_manager.dart';
+import 'package:flutter/services.dart'; // For MethodChannel
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:intl/intl.dart';
 
@@ -20,12 +21,15 @@ void main() async {
   await windowManager.setResizable(true);
   
   // Initialize tray manager
+  // Removed old trayManager code, now using native MenuBarManager
+  /*
   try {
     await trayManager.setIcon('assets/icon.png', isTemplate: true);
   } catch (e) {
     print('Failed to set tray icon in main: $e');
     // Continue without custom icon
   }
+  */
   
   runApp(const SleepTimerApp());
 }
@@ -56,7 +60,7 @@ class SleepTimerHome extends StatefulWidget {
 }
 
 class _SleepTimerHomeState extends State<SleepTimerHome>
-    with TickerProviderStateMixin, TrayListener, WidgetsBindingObserver {
+    with TickerProviderStateMixin, WidgetsBindingObserver {
   int _hours = 0;
   int _minutes = 25;
   int _seconds = 0;
@@ -87,8 +91,8 @@ class _SleepTimerHomeState extends State<SleepTimerHome>
     _animationController.forward();
     
     // Initialize tray manager
-    trayManager.addListener(this);
-    _initTray();
+    // Initialize native menu bar connection
+    _initNativeMenuBar();
     
     // Configure window behavior for macOS
     _configureWindow();
@@ -111,7 +115,7 @@ class _SleepTimerHomeState extends State<SleepTimerHome>
     _timer?.cancel();
     _logTimer?.cancel();
     _animationController.dispose();
-    trayManager.removeListener(this);
+    // trayManager.removeListener(this);
     super.dispose();
   }
 
@@ -123,49 +127,11 @@ class _SleepTimerHomeState extends State<SleepTimerHome>
     }
   }
 
-  // Initialize tray
-  void _initTray() async {
-    try {
-      // Try to set custom icon, fallback to default if fails
-      try {
-        // isTemplate: true membuat macOS otomatis mewarnai icon (Putih di Dark mode, Hitam di Light mode)
-        // Pastikan 'assets/icon.png' adalah file PNG hitam transparan (siluet)
-        await trayManager.setIcon('assets/icon.png', isTemplate: true);
-      } catch (e) {
-        print('Failed to set custom icon, using default: $e');
-        // Don't set icon, let it use default
-      }
-      
-      await trayManager.setToolTip('RestClock');
-      await trayManager.setContextMenu(Menu(
-        items: [
-          MenuItem(
-            key: 'show',
-            label: 'Show App',
-          ),
-          MenuItem(
-            key: 'hide',
-            label: 'Hide App',
-          ),
-          MenuItem.separator(),
-          MenuItem(
-            key: 'start',
-            label: 'Start Timer',
-          ),
-          MenuItem(
-            key: 'stop',
-            label: 'Stop Timer',
-          ),
-          MenuItem.separator(),
-          MenuItem(
-            key: 'quit',
-            label: 'Quit App',
-          ),
-        ],
-      ));
-    } catch (e) {
-      print('Error initializing tray: $e');
-    }
+  // Initialize Native Menu Bar Channel
+  static const platform = MethodChannel('com.bryandanendra.sleptimer/island');
+
+  void _initNativeMenuBar() {
+    // Initial state setup if needed
   }
 
   // Configure window behavior for macOS
@@ -209,39 +175,78 @@ class _SleepTimerHomeState extends State<SleepTimerHome>
     }
   }
 
+  // Target end time for drift-proof counting
+  DateTime? _endTime;
+
   void _startTimer() {
     if (_totalSeconds <= 0) return;
+    
+    // Prevent multiple timers and fix "jumping"
+    _timer?.cancel(); 
 
     setState(() {
       _isRunning = true;
+      // Calculate target end time based on current total seconds
+      _endTime = DateTime.now().add(Duration(seconds: _totalSeconds));
+      
+      // Tell native to expand and show timer
+      platform.invokeMethod('startTimer');
     });
 
-    _timer = Timer.periodic(const Duration(seconds: 1), (timer) {
-      setState(() {
-        if (_totalSeconds > 0) {
-          _totalSeconds--;
+    _timer = Timer.periodic(const Duration(milliseconds: 200), (timer) {
+      // Use shorter interval (e.g. 200ms) for smoother updates, 
+      // but only update seconds when changed.
+      
+      final now = DateTime.now();
+      if (_endTime == null) {
+         timer.cancel();
+         return;
+      }
+      
+      final remaining = _endTime!.difference(now).inSeconds;
+      
+      if (remaining != _totalSeconds && remaining >= 0) {
+        setState(() {
+          _totalSeconds = remaining;
           _updateTimeDisplay();
-        } else {
-          _timer?.cancel();
-          _isRunning = false;
-          _executeAction();
-        }
-      });
+          platform.invokeMethod('updateTimer', _formatCompactTime(_hours, _minutes, _seconds));
+        });
+      }
+
+      if (remaining <= 0) {
+        timer.cancel();
+        setState(() {
+           _totalSeconds = 0;
+           _isRunning = false;
+           _endTime = null;
+           _updateTimeDisplay();
+        });
+        platform.invokeMethod('stopTimer');
+        _executeAction();
+      }
     });
   }
 
   void _stopTimer() {
     _timer?.cancel();
+    _endTime = null;
     setState(() {
       _isRunning = false;
+      platform.invokeMethod('stopTimer');
     });
   }
 
   void _resetTimer() {
     _timer?.cancel();
+    _endTime = null;
     setState(() {
       _isRunning = false;
-      _calculateTotalSeconds();
+      platform.invokeMethod('stopTimer');
+      _calculateTotalSeconds(); // Reset to original inputs (roughly, or logic needs to track 'original')
+      // Actually _calculateTotalSeconds relies on _hours/_minutes spinners. 
+      // If we counted down, _totalSeconds is 0. We might want to restore inputs?
+      // For now, standard behavior: recalculate from current spinners.
+      _updateTimeDisplay(); // Ensure display reflects spinners
     });
   }
 
@@ -290,6 +295,21 @@ class _SleepTimerHomeState extends State<SleepTimerHome>
     }
   }
 
+  // Format waktu untuk Dynamic Island (Compact: 1h 20m, 15m 30s)
+  String _formatCompactTime(int hours, int minutes, int seconds) {
+    if (hours > 0) {
+      if (minutes > 0) {
+        return '${hours}h ${minutes}m';
+      } else {
+        return '${hours}h';
+      }
+    } else if (minutes > 0) {
+      return '${minutes}m ${seconds}s';
+    } else {
+      return '${seconds}s';
+    }
+  }
+
   String _formatTime(int hours, int minutes, int seconds) {
     if (_isTimeMode) {
       // Format waktu untuk mode jam
@@ -323,11 +343,13 @@ class _SleepTimerHomeState extends State<SleepTimerHome>
       
       if (result.exitCode == 0) {
         final output = result.stdout.toString();
-        final events = _parseSleepWakeEvents(output);
         
-        if (mounted) { // Always update, events might be empty or changed
+        // OPTIMIZATION: Run parsing in a background isolate using compute()
+        // This prevents UI jank when processing 5000+ lines of logs
+        final events = await compute(_parseLogsInIsolate, output);
+        
+        if (mounted) { 
           setState(() {
-            // Store events for scrollable list display
             _historyEvents = events;
           });
         }
@@ -336,129 +358,8 @@ class _SleepTimerHomeState extends State<SleepTimerHome>
       print('Error reading system logs: $e');
     }
   }
-  
-  List<Map<String, String>> _parseSleepWakeEvents(String logOutput) {
-    final events = <Map<String, String>>[];
-    final lines = logOutput.split('\n');
-    
-    // 1. Cek Boot Time dari Summary Line (Paling Akurat untuk Last Boot)
-    // Contoh: Total Sleep/Wakes since boot at 2026-02-02 11:23:36 +0700 :0
-    final bootSummaryMatch = RegExp(r'Total Sleep/Wakes since boot at (\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})').firstMatch(logOutput);
-    if (bootSummaryMatch != null) {
-      final bootTimeStr = bootSummaryMatch.group(1)!;
-      try {
-        final bootTime = DateTime.parse(bootTimeStr);
-        events.add({
-          'type': 'Boot',
-          'time': _formatTimeForLog(bootTime),
-          'timestamp': bootTime.millisecondsSinceEpoch.toString(),
-        });
-      } catch (e) {
-        // Ignore parse error
-      }
-    }
 
-    for (var line in lines) {
-      try {
-        String eventType = '';
-        
-        // 2. Parsing Event Historis
-        if (line.contains('Entering Sleep state') ||
-            (line.contains('Sleep') && line.contains('due to') && !line.contains('Display'))) {
-          eventType = 'Sleep';
-        } 
-        // Wake: Perketat agar tidak menangkap sembarang log
-        else if (line.contains('Wake from Normal Sleep') ||
-                 line.contains('WakeFromNormalSleep') || 
-                 (line.contains('Wake') && line.contains('due to') && !line.contains('Display') && !line.contains('DarkWake'))) {
-          eventType = 'Wake';
-        } 
-        // Shutdown
-        else if (line.contains('Shutdown cause') || line.contains('SHUTDOWN')) {
-          eventType = 'Shutdown';
-        } 
-        // Boot logs historis (jika ada)
-        else if (line.contains('Boot') && line.contains('args:')) {
-          eventType = 'Boot';
-        }
-        
-        if (eventType.isNotEmpty) {
-          final timeMatch = RegExp(r'(\d{4}-\d{2}-\d{2})\s+(\d{2}:\d{2}:\d{2})').firstMatch(line);
-          
-          if (timeMatch != null) {
-            final dateStr = timeMatch.group(1)!;
-            final timeStr = timeMatch.group(2)!;
-            
-            try {
-              final dateTime = DateTime.parse('$dateStr $timeStr');
-              events.add({
-                'type': eventType,
-                'time': _formatTimeForLog(dateTime),
-                'timestamp': dateTime.millisecondsSinceEpoch.toString(),
-              });
-            } catch (e) {
-              // Skip
-            }
-          }
-        }
-      } catch (e) {
-        // Skip malformed lines
-      }
-    }
-    
-    // Sort Newest -> Oldest
-    events.sort((a, b) => int.parse(b['timestamp']!).compareTo(int.parse(a['timestamp']!)));
-    
-    // Filter Duplikasi & Logic Pembersihan
-    final uniqueEvents = <Map<String, String>>[];
-    String? lastType;
-    
-    // Logic: STRICT ALTERNATING (Hanya simpan PERUBAHAN Status)
-    // Wake -> Sleep -> Wake -> Shutdown -> Boot
-    // Tidak boleh ada: Sleep -> Sleep atau Wake -> Wake
-    
-    for (var event in events) {
-      final type = event['type']!;
-      
-      bool shouldKeep = false;
-      
-      if (lastType == null) {
-        shouldKeep = true;
-      } else {
-        // Khusus Boot: Selalu simpan (karena restart bisa Boot -> Boot)
-        // Tapi tetap filter jika duplikat persis di detik yang sama (sudah dihandle sort & unique set logic if needed, but here simple logic)
-        if (type == 'Boot') {
-           shouldKeep = true;
-        } 
-        // Untuk Wake, Sleep, Shutdown: Hanya simpan jika STATUS BERUBAH
-        else if (type != lastType) {
-          shouldKeep = true;
-        }
-        // Jika type == lastType (e.g. Sleep -> Sleep), SKIP (Buang Sleep maintenance)
-      }
-
-      if (shouldKeep) {
-        uniqueEvents.add(event);
-        lastType = type;
-      }
-    }
-    
-    return uniqueEvents;
-  }
-
-  // Helper formatting
-  String _formatTimeForLog(DateTime dateTime) {
-    final now = DateTime.now();
-    if (dateTime.year == now.year && dateTime.month == now.month && dateTime.day == now.day) {
-      return 'Today, ${DateFormat('h:mm a').format(dateTime)}';
-    } else if (dateTime.year == now.year && dateTime.month == now.month && dateTime.day == now.day - 1) {
-      return 'Yesterday, ${DateFormat('h:mm a').format(dateTime)}';
-    } else {
-      return DateFormat('MMM d, h:mm a').format(dateTime);
-    }
-  }
-
-  // Tray listener methods
+  /*
   @override
   void onTrayIconMouseDown() async {
     // Show window when tray icon is clicked
@@ -496,6 +397,8 @@ class _SleepTimerHomeState extends State<SleepTimerHome>
         break;
     }
   }
+  */
+
 
   @override
   Widget build(BuildContext context) {
@@ -542,7 +445,11 @@ class _SleepTimerHomeState extends State<SleepTimerHome>
                           MouseRegion(
                             cursor: _isRunning ? SystemMouseCursors.basic : SystemMouseCursors.click,
                             child: GestureDetector(
-                              onTap: _isRunning ? null : _toggleTimeMode,
+                              behavior: HitTestBehavior.opaque,
+                              onTap: _isRunning ? null : () {
+                                print('Toggle button tapped! isRunning: $_isRunning, isTimeMode: $_isTimeMode');
+                                _toggleTimeMode();
+                              },
                               child: Container(
                                 padding: const EdgeInsets.all(12),
                                 decoration: BoxDecoration(
@@ -1123,6 +1030,7 @@ class _SleepTimerHomeState extends State<SleepTimerHome>
                             child: TextField(
                               controller: hoursController,
                               keyboardType: TextInputType.number,
+                              autofocus: true, // Auto focus for keyboard input
                               style: const TextStyle(color: Colors.white, fontSize: 16),
                               decoration: InputDecoration(
                                 labelText: 'Hours',
@@ -1272,5 +1180,139 @@ class _SleepTimerHomeState extends State<SleepTimerHome>
         );
       },
     );
+  }
+}
+
+// --- TOP LEVEL FUNCTIONS FOR ISOLATE ---
+
+// Fungsi parsing ini dijalankan di background isolate
+// Tidak boleh mengakses state UI atau plugin apapun
+List<Map<String, String>> _parseLogsInIsolate(String logOutput) {
+  final events = <Map<String, String>>[];
+  final lines = logOutput.split('\n');
+  
+  // 1. Cek Boot Time dari Summary Line
+  final bootSummaryMatch = RegExp(r'Total Sleep/Wakes since boot at (\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})').firstMatch(logOutput);
+  if (bootSummaryMatch != null) {
+    final bootTimeStr = bootSummaryMatch.group(1)!;
+    try {
+      final bootTime = DateTime.parse(bootTimeStr);
+      events.add({
+        'type': 'Boot',
+        'time': _formatTimeStatic(bootTime),
+        'timestamp': bootTime.millisecondsSinceEpoch.toString(),
+      });
+    } catch (e) {
+      // Ignore
+    }
+  }
+
+  for (var line in lines) {
+    try {
+      String eventType = '';
+      
+      // 2. Parsing Event Historis
+      if (line.contains('Entering Sleep state') ||
+          (line.contains('Sleep') && line.contains('due to') && !line.contains('Display'))) {
+        eventType = 'Sleep';
+      } 
+      else if (line.contains('Wake from Normal Sleep') ||
+               line.contains('WakeFromNormalSleep') || 
+               (line.contains('Wake') && line.contains('due to') && !line.contains('Display') && !line.contains('DarkWake'))) {
+        eventType = 'Wake';
+      } 
+      else if (line.contains('Shutdown cause') || line.contains('SHUTDOWN')) {
+        eventType = 'Shutdown';
+      } 
+      else if (line.contains('Boot') && line.contains('args:')) {
+        eventType = 'Boot';
+      }
+      
+      if (eventType.isNotEmpty) {
+        final timeMatch = RegExp(r'(\d{4}-\d{2}-\d{2})\s+(\d{2}:\d{2}:\d{2})').firstMatch(line);
+        
+        if (timeMatch != null) {
+          final dateStr = timeMatch.group(1)!;
+          final timeStr = timeMatch.group(2)!;
+          
+          try {
+            final dateTime = DateTime.parse('$dateStr $timeStr');
+            events.add({
+              'type': eventType,
+              'time': _formatTimeStatic(dateTime),
+              'timestamp': dateTime.millisecondsSinceEpoch.toString(),
+            });
+          } catch (e) {
+            // Skip
+          }
+        }
+      }
+    } catch (e) {
+      // Skip
+    }
+  }
+  
+  // Sort Newest -> Oldest
+  events.sort((a, b) => int.parse(b['timestamp']!).compareTo(int.parse(a['timestamp']!)));
+  
+  // Filter Duplikasi (Strict Alternating)
+  final uniqueEvents = <Map<String, String>>[];
+  String? lastType;
+  
+  for (var event in events) {
+    final type = event['type']!;
+    bool shouldKeep = false;
+    
+    if (lastType == null) {
+      shouldKeep = true;
+    } else {
+      if (type == 'Boot') {
+         shouldKeep = true;
+      } else if (type != lastType) {
+        shouldKeep = true;
+      }
+    }
+
+    if (shouldKeep) {
+      uniqueEvents.add(event);
+      lastType = type;
+    }
+  }
+  
+  return uniqueEvents;
+}
+
+// Helper formatting statis (karena harus dipanggil dari isolate)
+String _formatTimeStatic(DateTime dateTime) {
+  final now = DateTime.now();
+  // Simple formatting tanpa intl package dependency di isolate jika memungkinkan,
+  // tapi compute share memory dengan main isolate jadi intl harusnya oke jika diimport global.
+  // We use DateFormat from intl here.
+  
+  // Note: DateFormat might need initialization inside isolate if it uses locale data.
+  // But usually default en_US works fine.
+  
+  // Custom manual formatting to be safe and fast in isolate
+  String twoDigits(int n) {
+      if (n >= 10) return "$n";
+      return "0$n";
+  }
+  
+  String formatHour(int hour) {
+      int h = hour > 12 ? hour - 12 : (hour == 0 ? 12 : hour);
+      return "$h";
+  }
+  
+  String amPm(int hour) => hour >= 12 ? "PM" : "AM";
+  
+  String timeStr = "${formatHour(dateTime.hour)}:${twoDigits(dateTime.minute)} ${amPm(dateTime.hour)}";
+
+  if (dateTime.year == now.year && dateTime.month == now.month && dateTime.day == now.day) {
+    return 'Today, $timeStr';
+  } else if (dateTime.year == now.year && dateTime.month == now.month && dateTime.day == now.day - 1) {
+    return 'Yesterday, $timeStr';
+  } else {
+     const months = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+     return "${months[dateTime.month - 1]} ${dateTime.day}, $timeStr";
   }
 }
