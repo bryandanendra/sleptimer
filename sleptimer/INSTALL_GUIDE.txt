@@ -1,0 +1,22 @@
+How to Install RestClock
+========================
+
+1. Drag "RestClock" icon to the "Applications" folder shortcut.
+2. Go to your Applications folder in Finder.
+3. Right-click (or Control-click) on "RestClock" and select "Open".
+4. If you see a warning asking if you're sure, click "Open".
+
+Troubleshooting: "App is damaged" or "Can't be opened"
+------------------------------------------------------
+If you see an error saying "RestClock is damaged and can't be opened", 
+don't worry! This is just macOS being strict about apps downloaded 
+from outside the App Store.
+
+To fix it easily:
+1. Open the "Terminal" app (press Command+Space, type Terminal, hit Enter).
+2. Copy and paste the following command exactly:
+   
+   xattr -cr /Applications/RestClock.app
+
+3. Press Enter.
+4. Now open RestClock again from your Applications folder.

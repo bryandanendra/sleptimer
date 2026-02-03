@@ -85,6 +85,9 @@ class MenuBarManager: NSObject {
             button.target = self
             button.action = #selector(handleIconClick)
             
+            // Enable right-click (context menu)
+            button.sendAction(on: [.leftMouseUp, .rightMouseUp])
+            
             // Critical Fix: Remove the rectangular shadow box
             button.window?.hasShadow = false 
             
@@ -104,8 +107,16 @@ class MenuBarManager: NSObject {
         }
     }
     
-    @objc private func handleIconClick() {
-        // Only toggle if island is hidden (Standard mode)
+    @objc private func handleIconClick(_ sender: NSStatusBarButton) {
+        let event = NSApp.currentEvent!
+        
+        // Right-click: Show context menu
+        if event.type == .rightMouseUp {
+            showContextMenu()
+            return
+        }
+        
+        // Left-click: Only toggle if island is hidden (Standard mode)
         // If island is active, IslandView's mouseDown handles it
         if islandView.isHidden {
             toggleWindow()

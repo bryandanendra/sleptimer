@@ -25,6 +25,10 @@ mkdir -p "$DMG_DIR"
 echo "📋 Copying RestClock to DMG..."
 cp -R "build/macos/Build/Products/Release/sleptimer.app" "$DMG_DIR/RestClock.app"
 
+# Copy Install Guide
+echo "📄 Copying Install Guide..."
+cp "INSTALL_GUIDE.txt" "$DMG_DIR/👋 INSTALL_INSTRUCTIONS.txt"
+
 # Create Applications shortcut
 echo "🔗 Creating Applications shortcut..."
 ln -s "/Applications" "$DMG_DIR/Applications"
