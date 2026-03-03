@@ -69,7 +69,6 @@ class _SleepTimerHomeState extends State<SleepTimerHome>
   bool _isSleepMode = true;
   bool _isTimeMode = false; // Mode waktu jam
   Timer? _timer;
-  Timer? _logTimer; // Timer untuk update log otomatis
   late AnimationController _animationController;
   late Animation<double> _fadeAnimation;
   
@@ -102,18 +101,12 @@ class _SleepTimerHomeState extends State<SleepTimerHome>
     
     // Load Mac system logs (last 3 activities)
     _loadMacSystemLogs();
-    
-    // Auto refresh logs every 60 seconds
-    _logTimer = Timer.periodic(const Duration(seconds: 60), (timer) {
-      _loadMacSystemLogs();
-    });
   }
 
   @override
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
     _timer?.cancel();
-    _logTimer?.cancel();
     _animationController.dispose();
     // trayManager.removeListener(this);
     super.dispose();
@@ -627,6 +620,39 @@ class _SleepTimerHomeState extends State<SleepTimerHome>
                   // Footer - Sticky History Log
                   if (_historyEvents.isNotEmpty) ...[
                     const SizedBox(height: 20),
+                    Row(
+                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                      children: [
+                        const Text(
+                          'System Activity Logs',
+                          style: TextStyle(
+                            fontSize: 12,
+                            color: Colors.white54,
+                            fontWeight: FontWeight.w600,
+                          ),
+                        ),
+                        MouseRegion(
+                          cursor: SystemMouseCursors.click,
+                          child: GestureDetector(
+                            onTap: _loadMacSystemLogs,
+                            child: Row(
+                              children: const [
+                                Icon(Icons.refresh, size: 14, color: Colors.white54),
+                                SizedBox(width: 4),
+                                Text(
+                                  'Refresh',
+                                  style: TextStyle(
+                                    fontSize: 12,
+                                    color: Colors.white54,
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 8),
                     Expanded(
                       child: Container(
                         // No fixed height, fills remaining space

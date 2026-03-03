@@ -32,11 +32,20 @@ class MenuBarManager: NSObject {
     private let compactWidth: CGFloat = 28.0 // Standard MenuBar Item width
     private let height: CGFloat = 22.0
     
+    private var currentIslandColor: NSColor = NSColor(white: 0.1, alpha: 1.0)
+    
     // Assets
     private var idleIcon: NSImage?
     
     override init() {
         super.init()
+        
+        // Load custom island color from UserDefaults
+        if let colorDict = UserDefaults.standard.dictionary(forKey: "islandColorDict") as? [String: CGFloat],
+           let r = colorDict["r"], let g = colorDict["g"], let b = colorDict["b"], let a = colorDict["a"] {
+            currentIslandColor = NSColor(srgbRed: r, green: g, blue: b, alpha: a)
+        }
+        
         // Load custom icon from Assets
         if let image = NSImage(named: "MenuBarIcon") {
             image.isTemplate = true // Adapt to system theme (White on Dark, Black on Light)
@@ -98,6 +107,7 @@ class MenuBarManager: NSObject {
         
         islandView = IslandView(frame: NSRect(x: 0, y: 0, width: compactWidth, height: height))
         islandView.isHidden = true 
+        islandView.setBackgroundColor(color: currentIslandColor)
         
         islandView.onContextMenu = { [weak self] in self?.showContextMenu() }
         islandView.onToggle = { [weak self] in self?.toggleWindow() }
@@ -242,6 +252,12 @@ class MenuBarManager: NSObject {
         
         menu.addItem(NSMenuItem.separator())
         
+        let colorItem = NSMenuItem(title: "Change Island Color...", action: #selector(showColorPicker), keyEquivalent: "")
+        colorItem.target = self
+        menu.addItem(colorItem)
+        
+        menu.addItem(NSMenuItem.separator())
+        
         let quitItem = NSMenuItem(title: "Quit", action: #selector(quitApp), keyEquivalent: "q")
         quitItem.target = self
         menu.addItem(quitItem)
@@ -254,6 +270,34 @@ class MenuBarManager: NSObject {
     @objc private func showApp() {
         NSApp.activate(ignoringOtherApps: true)
         NSApp.windows.first?.makeKeyAndOrderFront(nil)
+    }
+    
+    @objc private func showColorPicker() {
+        NSColorPanel.shared.setTarget(self)
+        NSColorPanel.shared.setAction(#selector(colorDidChange(_:)))
+        NSColorPanel.shared.color = currentIslandColor
+        
+        NSColorPanel.shared.orderFront(nil)
+        NSApp.activate(ignoringOtherApps: true)
+    }
+    
+    @objc private func colorDidChange(_ sender: NSColorPanel) {
+        let newColor = sender.color
+        currentIslandColor = newColor
+        
+        // Save to UserDefaults as dict
+        if let colorSpace = newColor.usingColorSpace(.sRGB) {
+            let colorDict: [String: CGFloat] = [
+                "r": colorSpace.redComponent,
+                "g": colorSpace.greenComponent,
+                "b": colorSpace.blueComponent,
+                "a": colorSpace.alphaComponent
+            ]
+            UserDefaults.standard.set(colorDict, forKey: "islandColorDict")
+        }
+        
+        // Apply to island view
+        self.islandView.setBackgroundColor(color: newColor)
     }
     
     @objc private func quitApp() {
@@ -269,6 +313,7 @@ class IslandView: NSView {
     var onToggle: (() -> Void)?
     
     var currentMode: Mode = .idle
+    private var isCurrentlyLightMode: Bool? = nil
     
     private let timeLabel = NSTextField(labelWithString: "")
     private let iconDot = NSView() // The orange dot
@@ -339,6 +384,49 @@ class IslandView: NSView {
     
     func updateText(_ text: String) {
         timeLabel.stringValue = text
+    }
+    
+    func setBackgroundColor(r: CGFloat, g: CGFloat, b: CGFloat, a: CGFloat) {
+        backgroundLayer.backgroundColor = NSColor(srgbRed: r, green: g, blue: b, alpha: a).cgColor
+        updateContrastColors(r: r, g: g, b: b)
+    }
+    
+    func setBackgroundColor(color: NSColor) {
+        backgroundLayer.backgroundColor = color.cgColor
+        if let srgb = color.usingColorSpace(.sRGB) {
+            updateContrastColors(r: srgb.redComponent, g: srgb.greenComponent, b: srgb.blueComponent)
+        }
+    }
+    
+    private func updateContrastColors(r: CGFloat, g: CGFloat, b: CGFloat) {
+        // Calculate relative luminance
+        let luminance = (0.2126 * r) + (0.7152 * g) + (0.0722 * b)
+        
+        let isLight = luminance >= 0.5
+        
+        // Prevent animating identically over and over
+        if isCurrentlyLightMode == isLight { return }
+        isCurrentlyLightMode = isLight
+        
+        let targetTextColor = isLight ? NSColor(white: 0.1, alpha: 1.0) : .white
+        let targetDotColor = isLight ? NSColor(srgbRed: 0.8, green: 0.4, blue: 0.0, alpha: 1.0) : NSColor(srgbRed: 1.0, green: 0.55, blue: 0.0, alpha: 1.0)
+        
+        NSAnimationContext.runAnimationGroup({ context in
+            context.duration = 0.35 // Smooth transition duration
+            context.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
+            
+            // Text color transition natively
+            timeLabel.animator().textColor = targetTextColor
+            
+            // Dot color transition manually using layer animation
+            let colorAnim = CABasicAnimation(keyPath: "backgroundColor")
+            colorAnim.fromValue = iconDot.layer?.presentation()?.backgroundColor ?? iconDot.layer?.backgroundColor
+            colorAnim.toValue = targetDotColor.cgColor
+            colorAnim.duration = 0.35
+            
+            iconDot.layer?.backgroundColor = targetDotColor.cgColor
+            iconDot.layer?.add(colorAnim, forKey: "backgroundColor")
+        }, completionHandler: nil)
     }
     
     // Resets layers to (0,0) for the compact state after animation
