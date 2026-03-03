@@ -33,6 +33,7 @@ class MenuBarManager: NSObject {
     private let height: CGFloat = 22.0
     
     private var currentIslandColor: NSColor = NSColor(white: 0.1, alpha: 1.0)
+    private var colorWell: NSColorWell?
     
     // Assets
     private var idleIcon: NSImage?
@@ -273,15 +274,20 @@ class MenuBarManager: NSObject {
     }
     
     @objc private func showColorPicker() {
-        NSColorPanel.shared.setTarget(self)
-        NSColorPanel.shared.setAction(#selector(colorDidChange(_:)))
-        NSColorPanel.shared.color = currentIslandColor
+        if colorWell == nil {
+            colorWell = NSColorWell()
+            colorWell?.target = self
+            colorWell?.action = #selector(colorDidChange(_:))
+        }
+        colorWell?.color = currentIslandColor
+        colorWell?.activate(true)
         
+        // Ensure color panel comes to front
         NSColorPanel.shared.orderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
     }
     
-    @objc private func colorDidChange(_ sender: NSColorPanel) {
+    @objc private func colorDidChange(_ sender: NSColorWell) {
         let newColor = sender.color
         currentIslandColor = newColor
         
